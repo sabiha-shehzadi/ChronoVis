@@ -1,57 +1,76 @@
+
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Force CPU
+
 import gradio as gr
 import cv2
 import numpy as np
-import tensorflow as tf
 from tensorflow.keras.models import load_model
 
-# 1. Load the Model (We do this once when the app starts)
-model = load_model('Age_Gender_Model.h5')
+# Load trained model
+model = load_model("Age_Gender_Model.h5", compile=False)
 
-# 2. Define the Logic Function
+# Face detector
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+
 def predict_chronovis(image):
-    # Gradio passes us an image as a numpy array (RGB)
     if image is None:
         return "Please upload an image or use the webcam."
 
-    # --- Preprocessing (Must match training exactly) ---
-    # Resize to 128x128
-    processed_img = cv2.resize(image, (128, 128))
-    
-    # Normalize (0 to 1)
-    processed_img = processed_img / 255.0
-    
-    # Expand dimensions (The model expects a batch of images)
-    # Shape becomes (1, 128, 128, 3)
-    processed_img = np.expand_dims(processed_img, axis=0)
+    # Convert to grayscale for face detection
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.1, 5, minSize=(30, 30))
 
-    # --- Prediction ---
-    predictions = model.predict(processed_img)
-    
-    # Extract results
-    pred_gender = predictions[0][0][0] # 0 to 1
-    pred_age = predictions[1][0][0]    # Number
-    
-    # Interpret Gender
-    if pred_gender < 0.5:
-        gender_result = "Male"
-        confidence = (1 - pred_gender) * 100
+    if len(faces) > 0:
+        x, y, w, h = faces[0]
+        margin = int(w * 0.1)
+        face_img = image[
+            max(0, y - margin): y + h + margin,
+            max(0, x - margin): x + w + margin
+        ]
+        status = "✅ Face Detected"
     else:
-        gender_result = "Female"
-        confidence = pred_gender * 100
-        
-    # Interpret Age (Round it)
-    age_result = int(round(pred_age))
+        face_img = image
+        status = "⚠️ No face detected (using full image)"
 
-    return f"Gender: {gender_result} ({confidence:.1f}%)\nEstimated Age: {age_result} years old"
+    # Resize to model input size (128x128)
+    try:
+        face_img = cv2.resize(face_img, (128, 128))
+    except:
+        return "Error processing image."
 
-# 3. Create the UI (User Interface)
+    # Normalize
+    face_img = face_img.astype("float32")
+    face_img = (face_img / 127.5) - 1.0
+    face_img = np.expand_dims(face_img, axis=0)
+
+    # Predict
+    preds = model.predict(face_img)
+    gender_score = preds[0][0][0]
+    age = int(round(preds[1][0][0]))
+
+    if gender_score < 0.5:
+        gender = "Male"
+        confidence = (1 - gender_score) * 100
+    else:
+        gender = "Female"
+        confidence = gender_score * 100
+
+    return (
+        f"{status}\n"
+        f"Gender: {gender} ({confidence:.1f}%)\n"
+        f"Estimated Age: {age} years"
+    )
+
+# Gradio Interface
 interface = gr.Interface(
-    fn=predict_chronovis,                 # The function above
-    inputs=gr.Image(sources=["webcam", "upload"]), # Input method
-    outputs="text",                       # Output method
+    fn=predict_chronovis,
+    inputs=gr.Image(sources=["webcam", "upload"], type="numpy"),
+    outputs="text",
     title="ChronoVis",
-    description="Real-Time Age & Gender Recognition powered by Deep Learning (CNN). Upload a photo or use your webcam!"
+    description="Real-Time Age & Gender Prediction using Deep Learning"
 )
 
-# 4. Launch
 interface.launch()
